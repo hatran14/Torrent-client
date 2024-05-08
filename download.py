@@ -274,7 +274,7 @@ def read_meta_info(path):
 
 def download():
     meta_info = MetaInfo(read_meta_info(
-        "./Mitchell.J..Off-Grid.Solar.Power.Bible..Complete.Diy.Guide...2023.torrent"))
+        "./Stein.C..Django.5.Cookbook..70+.problem.solving.techniques,...2024.torrent"))
     tracker = Tracker(meta_info.announce_list)
     tracker.connect(meta_info.info_hash, meta_info.peer_id,
                     6881, 0, 0, meta_info.length)

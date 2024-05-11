@@ -6,6 +6,9 @@ import hashlib
 from struct import pack, unpack
 import math
 import time
+import struct
+import random
+from PyBitTorrent import TorrentClient
 
 CHOKE_ID = 0
 UNCHOKE_ID = 1
@@ -62,6 +65,23 @@ class MetaInfo:
         seed = str(time.time())
         return hashlib.sha1(seed.encode('utf-8')).digest()
 
+class PeerProtocol:
+    def __init__(self, request_data):
+        self.request_data = request_data
+    
+    def connection_made(self, transport):
+        # Gửi yêu cầu khi kết nối được thiết lập
+        transport.sendto(self.request_data)
+    
+    def datagram_received(self, data, addr):
+        # Xử lý phản hồi từ tracker
+        # Đảm bảo xử lý dữ liệu phản hồi theo định dạng bạn mong đợi từ tracker
+        peers = []
+        for i in range(0, len(data), 6):
+            ip = socket.inet_ntoa(data[i:i+4])
+            port = struct.unpack("!H", data[i+4:i+6])[0]
+            self.peer.append((ip, port))
+        print("List of peers:", peers)
 
 class Tracker:
     def __init__(self, announce_list):
@@ -81,7 +101,46 @@ class Tracker:
         }
         for tracker_url in self.announce_list:
             if tracker_url.startswith("udp"):
-                print("UDP trackers are not supported yet.")
+                print("Connecting to tracker:", tracker_url)
+                try:
+                    # Create a UDP socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    sock.settimeout(5)  # Set a timeout for receiving responses
+
+                    # Send request to tracker
+                    ip = tracker_url.split('//')[1].split(':')[0]
+                    port = int(tracker_url.split('//')[1].split(':')[1].split('/')[0])
+                    sock.connect((ip, port))
+
+                    protocol_id = 0x41727101980  # default protocol id for all torrent clients
+                    action = 0  # 0 for connect action
+                    transaction_id = 12345  # random number
+                    message = struct.pack('!qii', protocol_id, action, transaction_id)
+                    sock.send(message)
+                
+                    response = sock.recv(16)
+                    action, transaction_id, connection_id = struct.unpack('!iiq', response)
+                    
+                    key = random.getrandbits(32)
+                    num_want = -1
+                    ip_address = 0  # default
+                    data = struct.pack('!qii20s20sqqqiiiih', connection_id, 1, transaction_id, info_hash, peer_id, downloaded, left, uploaded, 2, ip_address, key, num_want, 6881)
+
+                    # Send the request
+                    sock.send(data)
+
+                    # Receive the response
+                    response1 = sock.recv(2048)
+                    peers = response1[20:]
+                    
+                    self.get_peers_from_tracker_response(peers)
+                
+                except Exception as e:
+                    print("Error connecting to tracker:", tracker_url, e)
+
+                finally:
+                    # Close the UDP socket (important for resource management)
+                    sock.close()
                 continue
             print("Connecting to tracker:", tracker_url)
             try:
@@ -95,9 +154,6 @@ class Tracker:
                 print("Error connecting to tracker:", tracker_url, e)
                 continue
 
-    def handle_udp_tracker(self, tracker_url):
-        pass
-
     def get_peers_from_tracker_response(self, peers_data):
         if isinstance(peers_data, list):
             for peer in peers_data:
@@ -108,16 +164,20 @@ class Tracker:
                         (peer['ip'], peer['port']))
             return
 
-        for i in range(0, len(peers_data), 6):
-            try:
-                ip = ".".join(str(byte) for byte in peers_data[i:i+4])
-                port = int.from_bytes(peers_data[i+4:i+6], byteorder='big')
-            except Exception as e:
-                print(e)
-
-            print(ip, port, 'hihi')
-            if (ip, port) not in self.peers:
-                self.peers.append((ip, port))
+        for i, byte in enumerate(peers_data):
+            if i % 6 == 0:
+                try:
+                    ip = ".".join(str(peers_data[i+j]) for j in range(4))
+                    port_data = peers_data[i+4:i+6]
+                    if len(port_data) == 2:
+                        port = int.from_bytes(port_data, byteorder='big')
+                        print(ip, port, 'hihi')
+                        if (ip, port) not in self.peers:
+                            self.peers.append((ip, port))
+                    else:
+                        print(f"Data at indices {i+4}:{i+6} does not contain exactly 2 bytes")
+                except Exception as e:
+                    print(e)
 
 
 class Peer:
@@ -243,28 +303,7 @@ class Peer:
 
         else:
             print("Received unknown message from peer. Message ID:", message_id)
-
-
-# class Piece:
-#     def __init__(self, piece_index, piece_length):
-#         self.piece_index = piece_index
-#         self.piece_length = piece_length
-#         self.blocks = [Block(i, BLOCK_SIZE) for i in range(
-#             0, math.ceil(piece_length / BLOCK_SIZE))]
-#         self.is_full = False
-
-#     def update_block_status(self):
-#         for block in self.blocks:
-#             if block.state == State.EMPTY:
-#                 block.state = State.REQUESTED
-#                 return
-
-#     def get_empty_block(self):
-#         for i, block in enumerate(self.blocks):
-#             if block.state == State.EMPTY:
-#                 return (self.piece_index, i * BLOCK_SIZE, min(BLOCK_SIZE, self.piece_length - i * BLOCK_SIZE))
-#         self.is_full = True
-#         return None
+#########################################################################################################
 
 def read_meta_info(path):
     with open(path, "rb") as f:
@@ -273,124 +312,22 @@ def read_meta_info(path):
 
 
 def download():
-    meta_info = MetaInfo(read_meta_info(
-        "./Stein.C..Django.5.Cookbook..70+.problem.solving.techniques,...2024.torrent"))
+    link = "./Stein.C..Django.5.Cookbook..70+.problem.solving.techniques,...2024.torrent"
+    meta_info = MetaInfo(read_meta_info(link))
     tracker = Tracker(meta_info.announce_list)
     tracker.connect(meta_info.info_hash, meta_info.peer_id,
                     6881, 0, 0, meta_info.length)
 
     peers = tracker.peers
     print(peers)
+    #Write peers list to a txt
+    with open('peers.txt', 'w') as f:
+        for peer in peers:
+            f.write(f'{peer[0]}:{peer[1]}\n')
     # Connect to each peer
-    for ip, port in peers:
-        print("Connecting to peer:", ip, port)
-        peer = Peer(ip, port, meta_info.info_hash)
-        try:
-            peer.connect()
-            # Handle the peer connection here (e.g., send/receive messages)
-            # ...
-        except Exception as e:
-            print(f"Error connecting to peer {ip}:{port} - {e}")
-
-    # class Downloader:
-    #     def __init__(self, torrent):
-    #         self.torrent = torrent
-    #         self.tracker_url_list = self.torrent.announce_list  # Use the first tracker URL
-    #         self.peer_id = self.torrent.peer_id
-    #         self.info_hash = self.torrent.info_hash
-    #         self.peer_port = 6881  # Default peer port
-    #         self.connected_peers = []
-    #         self.peers = []
-    #         self.connected_peers = []
-
-    #     def connect_to_tracker(self):
-    #         params = {
-    #             'info_hash': self.info_hash,
-    #             'peer_id': self.peer_id,
-    #             'port': self.peer_port,
-    #             'uploaded': 0,
-    #             'downloaded': 0,
-    #             'left': self.torrent.total_length,
-    #             'compact': 1,
-    #             'event': 'started'  # Notify the tracker that we started downloading
-    #         }
-
-    #         for tracker_url in self.tracker_url_list:
-    #             if tracker_url.startswith("udp"):
-    #                 print("UDP trackers are not supported yet.")
-    #                 continue
-    #             print("Connecting to tracker:", tracker_url)
-    #             try:
-    #                 response = requests.get(tracker_url, params=params, timeout=5)
-    #                 if response.status_code == 200:
-    #                     print("Connected to tracker successfully.")
-    #                     content = bdecode(response.content)
-    #                     self.get_peers_from_tracker_response(content['peers'])
-    #                 else:
-    #                     print("Failed to con  nect to tracker:", tracker_url)
-    #                     continue
-    #             except Exception as e:
-    #                 print("Error connecting to tracker:", tracker_url, e)
-    #                 continue
-
-    #         print("Found", len(self.peers), "peers from tracker.")
-    #         print("Peers:", self.peers)
-
-    #     def get_peers_from_tracker_response(self, peers_data):
-    #         if isinstance(peers_data, list):
-    #             for peer in peers_data:
-    #                 ip = peer['ip']
-    #                 port = peer['port']
-    #                 peer_id = peer['peer id']
-    #                 if (ip, port, peer_id) not in self.peers:
-    #                     self.peers.append(
-    #                         (peer['ip'], peer['port'], peer['peer id']))
-    #             return
-
-    #         for i in range(0, len(peers_data), 6):
-    #             ip = ".".join(str(byte) for byte in peers_data[i:i+4])
-    #             port = int.from_bytes(peers_data[i+4:i+6], byteorder='big')
-    #             peer_id = peers_data[i+6:i+26].decode('utf-8')
-    #             if (ip, port, peer_id) not in self.peers:
-    #                 self.peers.append((ip, port, peer_id))
-
-    #     def connect_to_peers(self):
-    #         print("Connecting to peers...")
-    #         protocol = b"BitTorrent protocol"
-    #         reserved = b"\x00" * 8
-    #         protocol_length = pack('>B', len(protocol))
-    #         handshake = protocol_length + protocol + \
-    #             reserved + self.info_hash + self.peer_id
-
-    #         for peer in self.peers:
-    #             ip = peer[0]
-    #             port = peer[1]
-    #             print("Connecting to peer:", ip, port)
-    #             peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #             try:
-    #                 peer_socket.connect((ip, port))
-    #                 print("Connected to peer:", ip, port)
-    #                 peer_socket.sendall(handshake)
-    #                 response = peer_socket.recv(68)
-    #                 connected_peer_id = response[48:]
-    #                 # print(peer_id.hex())
-    #                 peer_socket.close()
-    #                 return connected_peer_id
-
-    #             except Exception as e:
-    #                 print("Error connecting to peer:", ip, port, e)
-    #                 continue
-
-    #     # def download(self, peer_socket):
-    #     #     print("Starting download...")
-
-    #     #     print("Download completed.")
-
-
-    #     def start(self):
-    #         # Start the downloading process
-    #         self.connect_to_tracker()
-    #         self.connect_to_peers()
+    client = TorrentClient(link, max_peers=50, use_progress_bar=True, peers_file='peers.txt', output_dir='./DSownload')
+    client.start()
+    
 if __name__ == "__main__":
     download()
 # 14.186.94.68 6881
